@@ -46,6 +46,9 @@ const (
 // Read from `gh api repos/router-for-me/Cli-Proxy-API-Management-Center --jq .id`; the id survives renames.
 const upstreamPanelRepositoryID = "1051566067"
 
+// redactedLogValue replaces a configured URL that cannot be logged without risking credentials or secrets.
+const redactedLogValue = "<redacted: value may contain credentials>"
+
 // ManagementFileName exposes the control panel asset filename.
 const ManagementFileName = managementAssetName
 
@@ -479,8 +482,11 @@ func parsePanelRepository(raw string) (panelRepository, bool) {
 		}
 		repository = panelRepository{owner: segments[0], name: segments[1]}
 	case "api.github.com":
-		if len(segments) >= 2 && strings.EqualFold(segments[0], "repositories") && githubRepositoryIDPattern.MatchString(segments[1]) {
-			return panelRepository{id: segments[1], user: user}, true
+		if len(segments) >= 2 && strings.EqualFold(segments[0], "repositories") {
+			// GitHub resolves ids with leading zeros, so normalize before comparing.
+			if id := strings.TrimLeft(segments[1], "0"); githubRepositoryIDPattern.MatchString(id) {
+				return panelRepository{id: id, user: user}, true
+			}
 		}
 		if len(segments) < 3 || !strings.EqualFold(segments[0], "repos") {
 			return panelRepository{}, false
@@ -523,23 +529,30 @@ func isUpstreamManagementReleaseURL(releaseURL string) bool {
 	return ok && repository.isUpstream()
 }
 
-// logSafeURL drops credentials, query and fragment so a configured URL can be logged. Everything up to the
-// last "@" (keeping the scheme) is dropped before the value is cut at "?" or "#": a password may contain an
-// unencoded "?" or "#", and cutting first would leave the start of the credentials in the log.
+// logSafeURL drops credentials, query and fragment so a configured URL can be logged. When a "?" or "#"
+// appears before the last "@", the value cannot be split safely: the "@" may end unencoded credentials, or
+// it may sit inside a query or fragment whose remainder is secret. Such values are replaced by a fixed
+// placeholder rather than guessed at.
 func logSafeURL(raw string) string {
 	raw = strings.TrimSpace(raw)
-	if i := strings.LastIndex(raw, "@"); i >= 0 {
-		scheme := ""
-		if j := strings.Index(raw, "://"); j >= 0 && j < i {
-			scheme = raw[:j+len("://")]
+	if at := strings.LastIndex(raw, "@"); at >= 0 {
+		if cut := strings.IndexAny(raw, "?#"); cut >= 0 && cut < at {
+			return redactedLogValue
 		}
-		raw = scheme + raw[i+1:]
-	}
-	if i := strings.IndexAny(raw, "?#"); i >= 0 {
-		raw = raw[:i]
 	}
 	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
 		return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: parsed.Path}).String()
+	}
+	// Scheme-less and scp-style values: everything up to the last "@" (keeping any scheme) is userinfo.
+	if at := strings.LastIndex(raw, "@"); at >= 0 {
+		scheme := ""
+		if j := strings.Index(raw, "://"); j >= 0 && j < at {
+			scheme = raw[:j+len("://")]
+		}
+		raw = scheme + raw[at+1:]
+	}
+	if cut := strings.IndexAny(raw, "?#"); cut >= 0 {
+		raw = raw[:cut]
 	}
 	return raw
 }

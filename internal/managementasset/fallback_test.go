@@ -76,7 +76,7 @@ func TestIsUpstreamManagementReleaseURL(t *testing.T) {
 		{name: "upstream API repository id URL", repo: "https://api.github.com/repositories/1051566067/", want: true},
 		{name: "other API repository id", repo: "https://api.github.com/repositories/12345/releases/latest", want: false},
 		{name: "non-numeric API repository id", repo: "https://api.github.com/repositories/router-for-me/releases/latest", want: false},
-		{name: "API repository id with leading zero", repo: "https://api.github.com/repositories/01051566067/releases/latest", want: false},
+		{name: "API repository id with leading zero", repo: "https://api.github.com/repositories/01051566067/releases/latest", want: true},
 		{name: "fork repository URL", repo: forkPanelRepository, want: false},
 		{name: "fork owner/repo", repo: "mbartelt-bit/Cli-Proxy-API-Management-Center", want: false},
 		{name: "fork API releases URL", repo: defaultManagementReleaseURL, want: false},
@@ -144,10 +144,11 @@ func TestResolveReleaseURLWarnsWhenRepositoryIsNotRecognized(t *testing.T) {
 		{name: "non GitHub host", repo: "https://gitlab.com/router-for-me/Cli-Proxy-API-Management-Center", wantInLog: `"https://gitlab.com/router-for-me/Cli-Proxy-API-Management-Center"`},
 		{name: "credentials and query are not logged", repo: "https://user:hunter2@gitlab.com/o/r?token=abc123", wantInLog: `"https://gitlab.com/o/r"`, secretInLog: "hunter2"},
 		{name: "scheme-less credentials are not logged", repo: "user:hunter2@gitlab.com/o/r", wantInLog: `"gitlab.com/o/r"`, secretInLog: "hunter2"},
-		{name: "password with # is not logged", repo: "https://deploy:Tr0ub4dor#3@github.com/someone/private-panel", wantInLog: `"https://github.com/someone/private-panel"`, secretInLog: "Tr0ub4dor"},
-		{name: "password with ? is not logged", repo: "https://deploy:Tr0ub4dor?3@github.com/someone/private-panel", wantInLog: `"https://github.com/someone/private-panel"`, secretInLog: "Tr0ub4dor"},
-		{name: "scheme-less password with # is not logged", repo: "deploy:Tr0ub4dor#3@github.com/someone/private-panel", wantInLog: `"github.com/someone/private-panel"`, secretInLog: "Tr0ub4dor"},
-		{name: "non GitHub password with # is not logged", repo: "https://user:p#ss@gitlab.com/o/r", wantInLog: `"https://gitlab.com/o/r"`, secretInLog: "user:p"},
+		{name: "password with # is not logged", repo: "https://deploy:Tr0ub4dor#3@github.com/someone/private-panel", wantInLog: `"` + redactedLogValue + `"`, secretInLog: "Tr0ub4dor"},
+		{name: "password with ? is not logged", repo: "https://deploy:Tr0ub4dor?3@github.com/someone/private-panel", wantInLog: `"` + redactedLogValue + `"`, secretInLog: "Tr0ub4dor"},
+		{name: "scheme-less password with # is not logged", repo: "deploy:Tr0ub4dor#3@github.com/someone/private-panel", wantInLog: `"` + redactedLogValue + `"`, secretInLog: "Tr0ub4dor"},
+		{name: "non GitHub password with # is not logged", repo: "https://user:p#ss@gitlab.com/o/r", wantInLog: `"` + redactedLogValue + `"`, secretInLog: "user:p"},
+		{name: "query with an @ is not logged", repo: "https://gitlab.com/o/r?x=a@b&token=QSECRET", wantInLog: `"` + redactedLogValue + `"`, secretInLog: "QSECRET"},
 		{name: "API repository id that is not numeric", repo: "https://api.github.com/repositories/abc/releases/latest", wantInLog: `"https://api.github.com/repositories/abc/releases/latest"`},
 	}
 
@@ -547,15 +548,29 @@ func TestLogSafeURL(t *testing.T) {
 		"token@gitlab.com/o/r":                                        "gitlab.com/o/r",
 		"git@github.com:o/r.git":                                      "github.com:o/r.git",
 		"://not a url":                                                "://not a url",
-		"https://user:p#ss@github.com/o/r":                            "https://github.com/o/r",
-		"https://user:p?ss@github.com/o/r":                            "https://github.com/o/r",
-		"user:p#ss@x/y":                                               "x/y",
-		"user:p?ss@x/y":                                               "x/y",
-		"https://u:1234/x#y@h/o/r":                                    "https://h/o/r",
+		"https://gitlab.com/@group/proj":                              "https://gitlab.com/@group/proj",
+		// A "?" or "#" before the last "@" is ambiguous: credentials or a secret query could leak either way.
+		"https://user:p#ss@github.com/o/r":                                 redactedLogValue,
+		"https://user:p?ss@github.com/o/r":                                 redactedLogValue,
+		"user:p#ss@x/y":                                                    redactedLogValue,
+		"user:p?ss@x/y":                                                    redactedLogValue,
+		"https://u:1234/x#y@h/o/r":                                         redactedLogValue,
+		"https://gitlab.com/o/r?x=a@b&token=QSECRET":                       redactedLogValue,
+		"https://gitlab.com/o/r?email=me@example.com&private_token=Q":      redactedLogValue,
+		"https://gitlab.com/o/r#frag@QSECRET":                              redactedLogValue,
+		"https://gitlab.com/o/r?a=b@c/QSECRET":                             redactedLogValue,
+		"gitlab.com/o/r?x=a@b&token=QSECRET":                               redactedLogValue,
+		"https://api.github.com/repositories/1/releases?login=me@x.io&t=Q": redactedLogValue,
 	}
 	for raw, want := range tests {
-		if got := logSafeURL(raw); got != want {
+		got := logSafeURL(raw)
+		if got != want {
 			t.Errorf("logSafeURL(%q) = %q, want %q", raw, got, want)
+		}
+		for _, secret := range []string{"secret", "QSECRET", "p#ss", "p?ss", "1234", "abc"} {
+			if strings.Contains(raw, secret) && strings.Contains(got, secret) {
+				t.Errorf("logSafeURL(%q) = %q leaks %q", raw, got, secret)
+			}
 		}
 	}
 }
