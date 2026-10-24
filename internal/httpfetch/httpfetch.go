@@ -15,9 +15,21 @@ type Doer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// StatusError reports a response whose status code is outside the 2xx range.
+type StatusError struct {
+	StatusCode int
+	// Body holds up to 4 KiB of the trimmed response body.
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("unexpected status %d: %s", e.StatusCode, e.Body)
+}
+
 // GetBytes performs a GET request with the supplied headers, requires a
 // success status, and returns the response body. When maxSize is positive
-// the body is rejected once it exceeds maxSize bytes.
+// the body is rejected once it exceeds maxSize bytes. A non-2xx response
+// yields a *StatusError.
 func GetBytes(ctx context.Context, client Doer, requestURL string, headers map[string]string, maxSize int64) ([]byte, error) {
 	if client == nil {
 		client = http.DefaultClient
@@ -44,7 +56,7 @@ func GetBytes(ctx context.Context, client Doer, requestURL string, headers map[s
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, &StatusError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
 
 	reader := io.Reader(resp.Body)
