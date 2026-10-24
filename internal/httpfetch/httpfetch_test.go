@@ -2,6 +2,7 @@ package httpfetch
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,6 +47,13 @@ func TestGetBytesRejectsErrorStatus(t *testing.T) {
 	}
 	if !strings.Contains(errGet.Error(), "unexpected status 404") {
 		t.Fatalf("GetBytes() error = %v, want status 404", errGet)
+	}
+	var statusErr *StatusError
+	if !errors.As(errGet, &statusErr) {
+		t.Fatalf("GetBytes() error = %T, want *StatusError", errGet)
+	}
+	if statusErr.StatusCode != http.StatusNotFound || statusErr.Body != "missing" {
+		t.Fatalf("StatusError = %+v, want status 404 with body %q", statusErr, "missing")
 	}
 }
 

@@ -45,6 +45,23 @@ You can access the following providers locally and with multiple CLI accounts th
 </tbody>
 </table>
 
+## Fork notes
+
+This fork serves its management panel (`/management.html`) from the latest release of [mbartelt-bit/Cli-Proxy-API-Management-Center](https://github.com/mbartelt-bit/Cli-Proxy-API-Management-Center) instead of the upstream panel.
+
+- The server downloads the `management.html` asset of the panel fork's `releases/latest`: the release GitHub marks as Latest, which by default is the most recently created release that is neither a draft nor a prerelease. Until such a release exists, `/management.html` returns 404 on a fresh install. To publish one:
+  1. Enable GitHub Actions on the panel fork first. GitHub disables workflows on new forks, so a pushed tag runs nothing until someone opens <https://github.com/mbartelt-bit/Cli-Proxy-API-Management-Center/actions> and enables them.
+  2. Push a `vX.Y.Z` tag that does not already exist in the panel fork. The fork inherited the upstream tags (up to `v1.26.7` when it was created), and pushing a tag name that already exists there does not run the workflow, so pick a new one such as `v1.27.0`. The tag push runs the fork's release workflow, which builds the panel and publishes a release with `management.html`.
+- If that release cannot be fetched and no local copy exists yet, the server logs one warning that names the failure (no published release, lookup error, or download error) and does not fall back to the hosted upstream page (`https://cpamc.router-for.me/`), which is built from the upstream panel. An existing local copy is kept as is.
+- `management.panel-github-repository` accepts `https://github.com/owner/repo` (also without `https://`, with `www.`, a `.git` suffix or a trailing slash), `owner/repo`, `git@github.com:owner/repo.git`, and `https://api.github.com/repos/owner/repo` or `https://api.github.com/repositories/<id>` with or without `/releases` or `/releases/latest`. A value that names no GitHub repository logs a warning and falls back to the fork's panel.
+- To go back to the upstream panel, set `management.panel-github-repository` in `config.yaml`:
+
+  ```yaml
+  management:
+    panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+  ```
+
+  An existing `config.yaml` that already sets this key keeps the panel it names. Configs copied from an older `config.example.yaml` set the upstream repository explicitly, so remove that line or change it to use the fork's panel.
 
 ## Sponsor
 
