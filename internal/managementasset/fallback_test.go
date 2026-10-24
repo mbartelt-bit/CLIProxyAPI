@@ -71,6 +71,12 @@ func TestIsUpstreamManagementReleaseURL(t *testing.T) {
 		{name: "upstream API credentials", repo: "https://user:secret@api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center", want: true},
 		{name: "upstream API mixed case", repo: "https://API.GitHub.com/Repos/ROUTER-FOR-ME/Cli-Proxy-API-Management-Center", want: true},
 		{name: "upstream API without scheme", repo: "api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center", want: true},
+		{name: "upstream API repository id releases URL", repo: "https://api.github.com/repositories/1051566067/releases/latest", want: true},
+		{name: "upstream API repository id releases list URL", repo: "https://api.github.com/repositories/1051566067/releases", want: true},
+		{name: "upstream API repository id URL", repo: "https://api.github.com/repositories/1051566067/", want: true},
+		{name: "other API repository id", repo: "https://api.github.com/repositories/12345/releases/latest", want: false},
+		{name: "non-numeric API repository id", repo: "https://api.github.com/repositories/router-for-me/releases/latest", want: false},
+		{name: "API repository id with leading zero", repo: "https://api.github.com/repositories/01051566067/releases/latest", want: false},
 		{name: "fork repository URL", repo: forkPanelRepository, want: false},
 		{name: "fork owner/repo", repo: "mbartelt-bit/Cli-Proxy-API-Management-Center", want: false},
 		{name: "fork API releases URL", repo: defaultManagementReleaseURL, want: false},
@@ -111,6 +117,10 @@ func TestResolveReleaseURL(t *testing.T) {
 		{name: "API credentials are kept", repo: "https://user:secret@api.github.com/repos/someone/private-panel", want: "https://user:secret@api.github.com/repos/someone/private-panel/releases/latest"},
 		{name: "github.com credentials are not sent to the API host", repo: "https://user:secret@github.com/someone/private-panel", want: "https://api.github.com/repos/someone/private-panel/releases/latest"},
 		{name: "path traversal is not a repository", repo: "https://github.com/someone/..", want: defaultManagementReleaseURL},
+		{name: "API repository id", repo: "https://api.github.com/repositories/42", want: "https://api.github.com/repositories/42/releases/latest"},
+		{name: "API repository id releases latest URL", repo: "https://api.github.com/repositories/1051566067/releases/latest", want: "https://api.github.com/repositories/1051566067/releases/latest"},
+		{name: "API repository id http scheme and query", repo: "http://API.github.com/Repositories/42/releases?per_page=1", want: "https://api.github.com/repositories/42/releases/latest"},
+		{name: "API repository id credentials are kept", repo: "https://user:secret@api.github.com/repositories/42", want: "https://user:secret@api.github.com/repositories/42/releases/latest"},
 	}
 
 	for _, tt := range tests {
@@ -134,6 +144,11 @@ func TestResolveReleaseURLWarnsWhenRepositoryIsNotRecognized(t *testing.T) {
 		{name: "non GitHub host", repo: "https://gitlab.com/router-for-me/Cli-Proxy-API-Management-Center", wantInLog: `"https://gitlab.com/router-for-me/Cli-Proxy-API-Management-Center"`},
 		{name: "credentials and query are not logged", repo: "https://user:hunter2@gitlab.com/o/r?token=abc123", wantInLog: `"https://gitlab.com/o/r"`, secretInLog: "hunter2"},
 		{name: "scheme-less credentials are not logged", repo: "user:hunter2@gitlab.com/o/r", wantInLog: `"gitlab.com/o/r"`, secretInLog: "hunter2"},
+		{name: "password with # is not logged", repo: "https://deploy:Tr0ub4dor#3@github.com/someone/private-panel", wantInLog: `"https://github.com/someone/private-panel"`, secretInLog: "Tr0ub4dor"},
+		{name: "password with ? is not logged", repo: "https://deploy:Tr0ub4dor?3@github.com/someone/private-panel", wantInLog: `"https://github.com/someone/private-panel"`, secretInLog: "Tr0ub4dor"},
+		{name: "scheme-less password with # is not logged", repo: "deploy:Tr0ub4dor#3@github.com/someone/private-panel", wantInLog: `"github.com/someone/private-panel"`, secretInLog: "Tr0ub4dor"},
+		{name: "non GitHub password with # is not logged", repo: "https://user:p#ss@gitlab.com/o/r", wantInLog: `"https://gitlab.com/o/r"`, secretInLog: "user:p"},
+		{name: "API repository id that is not numeric", repo: "https://api.github.com/repositories/abc/releases/latest", wantInLog: `"https://api.github.com/repositories/abc/releases/latest"`},
 	}
 
 	for _, tt := range tests {
@@ -251,6 +266,15 @@ func TestSyncManagementAssetFailureLogs(t *testing.T) {
 			wantAsset:     localBody,
 			wantLogs:      [][]string{{"failed to fetch latest management release information"}},
 			wantNot:       []string{"fallback", "no management panel"},
+		},
+		{
+			name:       "repository id release missing",
+			repository: "https://api.github.com/repositories/12345",
+			release:    notFound,
+			wantLogs: [][]string{{"failed to fetch latest management release information; no management panel is available until a sync succeeds",
+				"it is not used for repository id 12345)", "no published release with management.html for repository id 12345",
+				"enable GitHub Actions at the Actions tab of repository id 12345 ("}},
+			wantNot: []string{"trying fallback page", "https://github.com/repository"},
 		},
 		{
 			name:       "fork release published",
@@ -402,6 +426,16 @@ func TestEnsureLatestManagementHTMLFallbackGate(t *testing.T) {
 			wantHosts:  []string{githubAPIConnectHost, fallbackConnectHost},
 		},
 		{
+			name:       "upstream repository id API URL still tries fallback",
+			repository: "https://api.github.com/repositories/1051566067/releases/latest",
+			wantHosts:  []string{githubAPIConnectHost, fallbackConnectHost},
+		},
+		{
+			name:       "other repository id API URL skips fallback",
+			repository: "https://api.github.com/repositories/12345/releases/latest",
+			wantHosts:  []string{githubAPIConnectHost},
+		},
+		{
 			name:       "unrecognized repository uses fork default and skips fallback",
 			repository: "https://gitlab.com/router-for-me/Cli-Proxy-API-Management-Center",
 			wantHosts:  []string{githubAPIConnectHost},
@@ -513,6 +547,11 @@ func TestLogSafeURL(t *testing.T) {
 		"token@gitlab.com/o/r":                                        "gitlab.com/o/r",
 		"git@github.com:o/r.git":                                      "github.com:o/r.git",
 		"://not a url":                                                "://not a url",
+		"https://user:p#ss@github.com/o/r":                            "https://github.com/o/r",
+		"https://user:p?ss@github.com/o/r":                            "https://github.com/o/r",
+		"user:p#ss@x/y":                                               "x/y",
+		"user:p?ss@x/y":                                               "x/y",
+		"https://u:1234/x#y@h/o/r":                                    "https://h/o/r",
 	}
 	for raw, want := range tests {
 		if got := logSafeURL(raw); got != want {

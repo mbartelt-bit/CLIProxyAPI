@@ -41,6 +41,11 @@ const (
 	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads
 )
 
+// upstreamPanelRepositoryID is GitHub's numeric id of the upstream panel repository, used by
+// api.github.com/repositories/{id} URLs (GitHub also redirects renamed or transferred repositories to that form).
+// Read from `gh api repos/router-for-me/Cli-Proxy-API-Management-Center --jq .id`; the id survives renames.
+const upstreamPanelRepositoryID = "1051566067"
+
 // ManagementFileName exposes the control panel asset filename.
 const ManagementFileName = managementAssetName
 
@@ -52,6 +57,8 @@ var (
 	// names. Owners never contain dots, which tells a bare "owner/repo" apart from "github.com/owner".
 	githubOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	githubNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	// githubRepositoryIDPattern accepts a numeric repository id in canonical form, so ids compare as strings.
+	githubRepositoryIDPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
 	// scpLikeGitPattern matches SSH remotes written as user@host:owner/repo.git.
 	scpLikeGitPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):(.+)$`)
 )
@@ -339,9 +346,9 @@ func nonUpstreamSyncFailureHint(stage syncStage, err error, repository string) s
 		return "the latest release lists the asset, so check network access and proxy-url; the download is retried on the next sync"
 	case managementReleaseMissing(err):
 		return fmt.Sprintf("GitHub reports no published release with %s for %s (a missing or private repository also returns 404). "+
-			"Publish one: on a fork, first enable GitHub Actions at https://github.com/%s/actions (GitHub disables workflows on new forks), "+
+			"Publish one: on a fork, first enable GitHub Actions at %s (GitHub disables workflows on new forks), "+
 			"then push a vX.Y.Z tag that does not already exist there so its release workflow runs. Or set management.panel-github-repository to %s",
-			managementAssetName, repository, repository, upstreamPanelRepositoryURL)
+			managementAssetName, repository, githubActionsPage(repository), upstreamPanelRepositoryURL)
 	default:
 		return "the release lookup is retried on the next sync"
 	}
@@ -356,12 +363,27 @@ func managementReleaseMissing(err error) bool {
 		(errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound)
 }
 
-// releaseRepositoryLabel names the repository behind a release URL as owner/name for log messages.
+// releaseRepositoryLabel names the repository behind a release URL for log messages: owner/name, or its
+// numeric id when the release URL uses the api.github.com/repositories/{id} form.
 func releaseRepositoryLabel(releaseURL string) string {
-	if repository, ok := parsePanelRepository(releaseURL); ok {
+	repository, ok := parsePanelRepository(releaseURL)
+	switch {
+	case !ok:
+		return logSafeURL(releaseURL)
+	case repository.id != "":
+		return "repository id " + repository.id
+	default:
 		return repository.owner + "/" + repository.name
 	}
-	return logSafeURL(releaseURL)
+}
+
+// githubActionsPage names where GitHub Actions is enabled for a repository labelled by releaseRepositoryLabel.
+// Only an owner/name label yields a page URL.
+func githubActionsPage(repository string) string {
+	if owner, name, ok := strings.Cut(repository, "/"); ok && githubOwnerPattern.MatchString(owner) && githubNamePattern.MatchString(name) {
+		return "https://github.com/" + repository + "/actions"
+	}
+	return "the Actions tab of " + repository
 }
 
 // ensureFallbackManagementHTML downloads the hosted fallback page into localPath. The page is the upstream
@@ -389,6 +411,9 @@ func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, loca
 type panelRepository struct {
 	owner string
 	name  string
+	// id is set instead of owner and name when the repository is named by its numeric GitHub id, as in
+	// api.github.com/repositories/{id}.
+	id string
 	// user keeps credentials written into an api.github.com URL, which the release request has always sent.
 	// Credentials written for github.com are never forwarded to the API host.
 	user *url.Userinfo
@@ -396,19 +421,26 @@ type panelRepository struct {
 
 // releaseURL returns the GitHub API URL of the repository's latest release.
 func (r panelRepository) releaseURL() string {
-	return (&url.URL{Scheme: "https", User: r.user, Host: "api.github.com", Path: "/repos/" + r.owner + "/" + r.name + "/releases/latest"}).String()
+	path := "/repos/" + r.owner + "/" + r.name + "/releases/latest"
+	if r.id != "" {
+		path = "/repositories/" + r.id + "/releases/latest"
+	}
+	return (&url.URL{Scheme: "https", User: r.user, Host: "api.github.com", Path: path}).String()
 }
 
 // isUpstream reports whether r is the upstream panel repository. GitHub owner and repository names are
 // case-insensitive.
 func (r panelRepository) isUpstream() bool {
+	if r.id != "" {
+		return r.id == upstreamPanelRepositoryID
+	}
 	return strings.EqualFold(r.owner, upstreamPanelOwner) && strings.EqualFold(r.name, upstreamPanelName)
 }
 
 // parsePanelRepository extracts the GitHub owner and repository name from a configured panel repository.
 // It accepts github.com and www.github.com repository URLs with or without a scheme (extra path segments such
-// as /releases are ignored), api.github.com /repos/{owner}/{repo} URLs with or without /releases or
-// /releases/latest, SSH remotes (ssh://git@github.com/... and git@github.com:owner/repo), and a bare
+// as /releases are ignored), api.github.com /repos/{owner}/{repo} and /repositories/{id} URLs with or without
+// /releases or /releases/latest, SSH remotes (ssh://git@github.com/... and git@github.com:owner/repo), and a bare
 // owner/repo. Hosts are case-insensitive; ports, query, fragment, trailing slashes and a ".git" suffix are
 // ignored.
 func parsePanelRepository(raw string) (panelRepository, bool) {
@@ -447,6 +479,9 @@ func parsePanelRepository(raw string) (panelRepository, bool) {
 		}
 		repository = panelRepository{owner: segments[0], name: segments[1]}
 	case "api.github.com":
+		if len(segments) >= 2 && strings.EqualFold(segments[0], "repositories") && githubRepositoryIDPattern.MatchString(segments[1]) {
+			return panelRepository{id: segments[1], user: user}, true
+		}
 		if len(segments) < 3 || !strings.EqualFold(segments[0], "repos") {
 			return panelRepository{}, false
 		}
@@ -481,25 +516,30 @@ func resolveReleaseURL(repo string) string {
 }
 
 // isUpstreamManagementReleaseURL reports whether a release URL belongs to the upstream panel repository. It
-// compares the GitHub owner and repository name, so scheme, port, credentials, query and the releases
-// suffix do not matter.
+// compares the GitHub owner and repository name (or the numeric repository id), so scheme, port, credentials,
+// query and the releases suffix do not matter.
 func isUpstreamManagementReleaseURL(releaseURL string) bool {
 	repository, ok := parsePanelRepository(releaseURL)
 	return ok && repository.isUpstream()
 }
 
-// logSafeURL drops credentials, query and fragment so a configured URL can be logged. Values that do not
-// parse as an absolute URL are returned without anything up to an "@", which could carry credentials.
+// logSafeURL drops credentials, query and fragment so a configured URL can be logged. Everything up to the
+// last "@" (keeping the scheme) is dropped before the value is cut at "?" or "#": a password may contain an
+// unencoded "?" or "#", and cutting first would leave the start of the credentials in the log.
 func logSafeURL(raw string) string {
 	raw = strings.TrimSpace(raw)
+	if i := strings.LastIndex(raw, "@"); i >= 0 {
+		scheme := ""
+		if j := strings.Index(raw, "://"); j >= 0 && j < i {
+			scheme = raw[:j+len("://")]
+		}
+		raw = scheme + raw[i+1:]
+	}
 	if i := strings.IndexAny(raw, "?#"); i >= 0 {
 		raw = raw[:i]
 	}
 	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
 		return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: parsed.Path}).String()
-	}
-	if i := strings.LastIndex(raw, "@"); i >= 0 {
-		raw = raw[i+1:]
 	}
 	return raw
 }
