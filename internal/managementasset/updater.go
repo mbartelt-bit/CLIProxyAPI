@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL  = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
-	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
+	defaultManagementReleaseURL  = "https://api.github.com/repos/mbartelt-bit/Cli-Proxy-API-Management-Center/releases/latest"
+	upstreamManagementReleaseURL = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
+	defaultManagementFallbackURL = "https://cpamc.router-for.me/" // Hosted build of the upstream panel only.
 	managementAssetName          = "management.html"
 	httpUserAgent                = "CLIProxyAPI-management-updater"
 	managementSyncMinInterval    = 30 * time.Second
@@ -246,7 +247,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		if err != nil {
 			if localFileMissing {
 				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
+				if ensureFallbackManagementHTML(ctx, client, localPath, releaseURL) {
 					return nil, nil
 				}
 				return nil, nil
@@ -264,7 +265,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		if err != nil {
 			if localFileMissing {
 				log.WithError(err).Warn("failed to download management asset, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
+				if ensureFallbackManagementHTML(ctx, client, localPath, releaseURL) {
 					return nil, nil
 				}
 				return nil, nil
@@ -291,7 +292,17 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	return err == nil
 }
 
-func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
+// ensureFallbackManagementHTML downloads the hosted fallback page into localPath. The fallback page is
+// the upstream panel build, so it is skipped when releaseURL belongs to any other panel repository;
+// persisting it there would replace that repository's panel with the upstream one.
+func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string, releaseURL string) bool {
+	if !isUpstreamManagementReleaseURL(releaseURL) {
+		log.Warnf("skipping fallback management page %s: it serves the upstream panel build, but the panel repository resolves to %s; "+
+			"publish a release with %s there, or set management.panel-github-repository to the upstream repository",
+			defaultManagementFallbackURL, logSafeURL(releaseURL), managementAssetName)
+		return false
+	}
+
 	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
 	if err != nil {
 		log.WithError(err).Warn("failed to download fallback management control panel page")
@@ -340,6 +351,23 @@ func resolveReleaseURL(repo string) string {
 	}
 
 	return defaultManagementReleaseURL
+}
+
+// isUpstreamManagementReleaseURL reports whether a release URL produced by resolveReleaseURL points at
+// the upstream panel repository. resolveReleaseURL already folds repository URLs, trailing slashes,
+// ".git" suffixes and releases API URLs into one form; GitHub owner and repository names are
+// case-insensitive, so the comparison is too.
+func isUpstreamManagementReleaseURL(releaseURL string) bool {
+	return strings.EqualFold(strings.TrimSpace(releaseURL), upstreamManagementReleaseURL)
+}
+
+// logSafeURL drops credentials, query and fragment so a configured URL can be logged.
+func logSafeURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "<invalid URL>"
+	}
+	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: parsed.Path}).String()
 }
 
 func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
