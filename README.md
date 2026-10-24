@@ -45,6 +45,20 @@ You can access the following providers locally and with multiple CLI accounts th
 </tbody>
 </table>
 
+## Fork notes
+
+This fork serves its management panel (`/management.html`) from the latest release of [mbartelt-bit/Cli-Proxy-API-Management-Center](https://github.com/mbartelt-bit/Cli-Proxy-API-Management-Center) instead of the upstream panel.
+
+- The panel fork must have at least one published `vX.Y.Z` release. Pushing a `vX.Y.Z` tag there runs its release workflow, which publishes the `management.html` asset this server downloads.
+- If that release cannot be fetched and no local copy exists yet, the server logs a warning and does not fall back to the hosted upstream page (`https://cpamc.router-for.me/`). An existing local copy is kept as is.
+- To go back to the upstream panel, set `management.panel-github-repository` in `config.yaml`:
+
+  ```yaml
+  management:
+    panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+  ```
+
+  An existing `config.yaml` that already sets this key keeps the panel it names. Configs copied from an older `config.example.yaml` set the upstream repository explicitly, so remove that line or change it to use the fork's panel.
 
 ## Sponsor
 
